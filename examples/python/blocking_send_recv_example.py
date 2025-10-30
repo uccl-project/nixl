@@ -17,10 +17,31 @@
 
 import argparse
 
+import os
+import sys
 import torch
 
-from nixl._api import nixl_agent, nixl_agent_config
-from nixl.logging import get_logger
+# Import NIXL Python API. Fallback to in-tree sources if package isn't installed.
+try:
+    from nixl._api import nixl_agent, nixl_agent_config  # type: ignore
+except ModuleNotFoundError:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    local_py = os.path.join(repo_root, 'src', 'api', 'python')
+    if os.path.exists(os.path.join(local_py, '_api.py')):
+        sys.path.insert(0, local_py)
+        from _api import nixl_agent, nixl_agent_config  # type: ignore
+    else:
+        raise
+
+# Import project logger, fallback to stdlib logging if unavailable.
+try:
+    from nixl.logging import get_logger  # type: ignore
+except Exception:
+    import logging as _pylog
+
+    def get_logger(name: str):
+        _pylog.basicConfig(level=_pylog.INFO)
+        return _pylog.getLogger(name)
 
 logger = get_logger(__name__)
 
@@ -30,6 +51,12 @@ def parse_args():
     parser.add_argument("--ip", type=str, required=True)
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--use_cuda", type=bool, default=False)
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="TCPX",
+        help="Backend plugin to use (e.g., TCPX, UCX)",
+    )
     parser.add_argument(
         "--mode",
         type=str,
@@ -52,7 +79,9 @@ if __name__ == "__main__":
     else:  # To be sure this is the default
         torch.set_default_device("cpu")
 
-    config = nixl_agent_config(True, True, listen_port)
+    # Use selected backend (default TCPX). Keep positional flags to preserve
+    # compatibility with older nixl python packages, and pass backend by name.
+    config = nixl_agent_config(True, True, listen_port, backends=[args.backend])
 
     # Allocate memory and register with NIXL
     agent = nixl_agent(args.mode, config)

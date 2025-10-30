@@ -47,6 +47,10 @@ if libuccl_engine.found() and not get_option('disable_uccl_backend')
     subdir('uccl')
 endif
 
+if libuccl_engine.found() and not get_option('disable_tcpx_backend')
+    subdir('tcpx')
+endif
+
 hf3fs_lib_path = '/usr/lib/'
 hf3fs_lib_file = 'hf3fs_api_shared'
 hf3fs_lib_found = cc.find_library(hf3fs_lib_file, dirs: [hf3fs_lib_path], required: false)
