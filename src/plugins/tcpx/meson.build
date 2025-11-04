@@ -31,7 +31,7 @@ else
     tcpx_backend_lib = shared_library('TCPX',
                'tcpx_backend.cpp', 'tcpx_backend.h', 'tcpx_plugin.cpp',
                dependencies: [nixl_infra, serdes_interface, cuda_dep, tcpx_engine_lib, nixl_common_dep],
-               include_directories: [nixl_inc_dirs, utils_inc_dirs],
+               include_directories: [nixl_inc_dirs, utils_inc_dirs, uccl_engine_inc],
                install: true,
                cpp_args : compile_flags + ['-fPIC'],
                name_prefix: 'libplugin_',  # Custom prefix for plugin libraries

@@ -41,6 +41,7 @@ createStaticTCPXPlugin() {
 #else
 extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
 nixl_plugin_init() {
+    fprintf(stderr, "[TCPX-plugin] init %s %s\n", __DATE__, __TIME__);
     return tcpx_plugin_t::create(
         NIXL_PLUGIN_API_VERSION, "TCPX", "0.1.0", get_tcpx_options(), {DRAM_SEG, VRAM_SEG});
 }

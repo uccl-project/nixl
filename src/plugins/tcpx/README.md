@@ -18,7 +18,10 @@ routes all communication through the Phase A `tcpx::Endpoint` implementation.
 git clone https://github.com/uccl-project/uccl.git   # or reuse the vendored copy
 cd uccl/p2p
 make USE_TCPX=1 -j
-sudo make install
+sudo install -m 0755 libuccl_engine.so /usr/local/lib/
+sudo ldconfig
+# Or equivalently:
+sudo make USE_TCPX=1 install
 ```
 
 The `USE_TCPX=1` flag toggles the build to include `tcpx_engine.cc`,
@@ -30,17 +33,14 @@ dynamic loader.
 ## Building the plugin
 
 Once `libuccl_engine.so` is available, build the TCPX plugin from the NIXL repo
-root. The Ninja target name is `TCPX` (not the filename):
+root:
 
 ```bash
 # from the NIXL repo root
 meson setup build -Ddisable_tcpx_backend=false         # first time
 # or: meson setup --reconfigure build -Ddisable_tcpx_backend=false
 
-# build the plugin by target name (preferred)
-ninja -C build TCPX
-
-# alternatively, build by output path
+# build the plugin directly by output path
 ninja -C build src/plugins/tcpx/libplugin_TCPX.so
 ```
 
@@ -57,7 +57,8 @@ plugin file or install it to the default location:
   - `export NIXL_PLUGIN_DIR=$(pwd)/build/src/plugins/tcpx`
   - Optional: `export NIXL_LOG_LEVEL=DEBUG` to see loader debug messages
 - System install:
-  - `ninja -C build install`
+  - `sudo install -d /usr/local/lib/plugins`
+  - `sudo install -m 0755 build/src/plugins/tcpx/libplugin_TCPX.so /usr/local/lib/plugins/`
   - Plugin path: `/usr/local/lib/plugins/libplugin_TCPX.so`
   - Either rely on default discovery or set `NIXL_PLUGIN_DIR=/usr/local/lib/plugins`
 
@@ -91,6 +92,7 @@ PY
   - `NCCL_GPUDIRECTTCPX_MIN_ZCOPY_SIZE=4096`
   - `NCCL_GPUDIRECTTCPX_RECV_SYNC=1`
   - `UCCL_TCPX_CHUNK_BYTES` ≤ 4 MiB
+  - `UCCL_TCPX_PORT_RETRIES` (optional) to probe adjacent ports if the base is busy
   - TCPX NIC binding variables (see `p2p/tcpx_plugin_usage.md` for a ready-made
     script)
 - Set `NIXL_BACKEND=tcp-x` (or the corresponding configuration entry) so the
