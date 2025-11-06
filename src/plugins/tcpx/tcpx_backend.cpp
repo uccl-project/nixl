@@ -599,6 +599,12 @@ nixlTcpxEngine::prepXfer(const nixl_xfer_op_t &operation,
     nixlTcpxBackendMD *rmd;
     handle = nullptr;
     NIXL_DEBUG << "TCPX PrepXfer: " << operation << " remote_agent: " << remote_agent;
+    
+    // For WRITE operations, all logic is in postXfer
+    if (operation == NIXL_WRITE) {
+        NIXL_DEBUG << "WRITE operation: skipping prepareXfer (all logic in postXfer)";
+        return NIXL_SUCCESS;
+    }
     // Get the connection for this remote agent
     auto conn_iter = connected_agents_.find(remote_agent);
     if (conn_iter == connected_agents_.end()) {
@@ -791,43 +797,87 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
 
         uccl_mr_t *local_mr = reinterpret_cast<uccl_mr_t *>(local_priv->mr_id);
 
-        size_t chunk_bytes = getChunkBytes();
-        bool enable_chunking = (chunk_bytes > 0) && (operation == NIXL_WRITE);
-        size_t remaining = lsize;
-        size_t offset = 0;
+        // BUG修复：对于TCPX backend，禁用NIXL层面的chunking
+        //
+        // 问题：NIXL plugin之前有自己的chunking逻辑，对每个chunk调用一次uccl_engine_write
+        //       每次调用都会创建一个独立的transfer（每个transfer只有1个chunk）
+        //       结果：窗口很快被填满，后续chunks无法post
+        //
+        // 正确做法：
+        // - 对于WRITE操作，不要在NIXL层面分chunk
+        // - 发送一次metadata（包含整个size）
+        // - 调用一次uccl_engine_write（包含整个size）
+        // - UCCL engine内部会自动分成多个chunks（通过UCCL_TCPX_CHUNK_BYTES控制）
+        //
+        // 注意：READ操作保持原有的chunking逻辑（因为READ是pull模式，不需要metadata）
 
-        while (remaining > 0) {
-            size_t chunk = remaining;
-            if (enable_chunking && remaining > chunk_bytes) {
-                chunk = std::min(remaining, chunk_bytes);
+        int result = 0;
+        uint64_t transfer_id = 0;
+
+        switch (operation) {
+        case NIXL_READ: {
+            // READ操作：保持原有的chunking逻辑
+            size_t chunk_bytes = getChunkBytes();
+            bool enable_chunking = (chunk_bytes > 0);
+            size_t remaining = lsize;
+            size_t offset = 0;
+
+            while (remaining > 0) {
+                size_t chunk = remaining;
+                if (enable_chunking && remaining > chunk_bytes) {
+                    chunk = std::min(remaining, chunk_bytes);
+                }
+
+                void *local_addr = reinterpret_cast<void *>(
+                    reinterpret_cast<uintptr_t>(lmd->addr) + offset);
+
+                result = uccl_engine_read(conn, local_mr, local_addr, chunk,
+                                          local_priv->fifo_item_data, &transfer_id);
+                if (result != 0) {
+                    NIXL_ERROR << "TCPX READ failed at offset=" << offset
+                               << " size=" << chunk;
+                    return NIXL_ERR_BACKEND;
+                }
+
+                if (!handle) {
+                    handle = new nixlTcpxReqH(conn);
+                }
+                tcpx_handle = static_cast<nixlTcpxReqH *>(handle);
+                tcpx_handle->transfer_ids.push_back(transfer_id);
+
+                NIXL_DEBUG << "Successfully posted READ chunk: offset=" << offset
+                           << " size=" << chunk << " transfer_id=" << transfer_id;
+
+                offset += chunk;
+                remaining -= chunk;
+            }
+            break;
+        }
+
+        case NIXL_WRITE: {
+            // WRITE操作：不要在NIXL层面分chunk，让UCCL engine来处理
+
+            // 1. 发送metadata（只发送一次，包含整个传输的大小）
+            md_t md;
+            md.op = UCCL_WRITE;
+            md.data.tx_data.data_ptr = reinterpret_cast<uint64_t>(rmd->addr);
+            md.data.tx_data.data_size = lsize;  // 整个传输的大小
+
+            int md_result = uccl_engine_send_tx_md(conn, &md);
+            if (md_result < 0) {
+                NIXL_ERROR << "Failed to send WRITE metadata: remote_addr="
+                           << rmd->addr << " size=" << lsize;
+                return NIXL_ERR_BACKEND;
             }
 
-            void *local_addr =
-                reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(lmd->addr) + offset);
+            NIXL_DEBUG << "Sent WRITE metadata: remote_addr=" << rmd->addr
+                       << " total_size=" << lsize;
 
-            int result = 0;
-            uint64_t transfer_id = 0;
-            switch (operation) {
-            case NIXL_READ: {
-                result = uccl_engine_read(conn,
-                                          local_mr,
-                                          local_addr,
-                                          chunk,
-                                          local_priv->fifo_item_data,
-                                          &transfer_id);
-                break;
-            }
-            case NIXL_WRITE:
-                result = uccl_engine_write(conn, local_mr, local_addr, chunk, &transfer_id);
-                break;
-
-            default:
-                NIXL_ERROR << "Unsupported operation type: " << operation;
-                return NIXL_ERR_INVALID_PARAM;
-            }
-
+            // 2. 调用一次uccl_engine_write（包含整个传输）
+            //    UCCL engine内部会自动分成多个chunks
+            result = uccl_engine_write(conn, local_mr, lmd->addr, lsize, &transfer_id);
             if (result != 0) {
-                NIXL_ERROR << "TCPX operation failed with result: " << result;
+                NIXL_ERROR << "TCPX WRITE failed: size=" << lsize;
                 return NIXL_ERR_BACKEND;
             }
 
@@ -837,13 +887,14 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
             tcpx_handle = static_cast<nixlTcpxReqH *>(handle);
             tcpx_handle->transfer_ids.push_back(transfer_id);
 
-            NIXL_DEBUG << "Successfully posted "
-                       << (operation == NIXL_READ ? "READ" : "WRITE")
-                       << " chunk: offset=" << offset << " bytes size=" << chunk
-                       << " transfer_id: " << transfer_id;
+            NIXL_DEBUG << "Successfully posted WRITE: size=" << lsize
+                       << " transfer_id=" << transfer_id;
+            break;
+        }
 
-            offset += chunk;
-            remaining -= chunk;
+        default:
+            NIXL_ERROR << "Unsupported operation type: " << operation;
+            return NIXL_ERR_INVALID_PARAM;
         }
     }
     if (opt_args && opt_args->hasNotif) {
