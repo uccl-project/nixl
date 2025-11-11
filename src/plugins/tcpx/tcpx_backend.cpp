@@ -924,7 +924,6 @@ nixlTcpxEngine::checkXfer(nixlBackendReqH *handle) const {
     }
 
     bool all_done = true;
-    uccl_engine_progress_conn(conn);
     for (uint64_t transfer_id : tcpx_handle->transfer_ids) {
         if (std::find(tcpx_handle->completed_transfer_ids.begin(),
                       tcpx_handle->completed_transfer_ids.end(),
