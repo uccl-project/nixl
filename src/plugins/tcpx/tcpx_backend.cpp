@@ -924,6 +924,7 @@ nixlTcpxEngine::checkXfer(nixlBackendReqH *handle) const {
     }
 
     bool all_done = true;
+    uccl_engine_progress_conn(conn);
     for (uint64_t transfer_id : tcpx_handle->transfer_ids) {
         if (std::find(tcpx_handle->completed_transfer_ids.begin(),
                       tcpx_handle->completed_transfer_ids.end(),
@@ -936,7 +937,7 @@ nixlTcpxEngine::checkXfer(nixlBackendReqH *handle) const {
             tcpx_handle->completed_transfer_ids.push_back(transfer_id);
         } else {
             all_done = false;
-            break;
+            continue;
         }
     }
     if (all_done && !tcpx_handle->notif_msg.empty()) {
