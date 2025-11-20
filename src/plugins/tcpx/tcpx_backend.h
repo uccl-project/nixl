@@ -158,6 +158,7 @@ public:
     std::vector<uint64_t> transfer_ids;
     std::vector<uint64_t> completed_transfer_ids;
     nixl_blob_t notif_msg;
+    bool expect_recv_done = false;
 };
 
 #endif

@@ -797,26 +797,14 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
 
         uccl_mr_t *local_mr = reinterpret_cast<uccl_mr_t *>(local_priv->mr_id);
 
-        // BUG修复：对于TCPX backend，禁用NIXL层面的chunking
-        //
-        // 问题：NIXL plugin之前有自己的chunking逻辑，对每个chunk调用一次uccl_engine_write
-        //       每次调用都会创建一个独立的transfer（每个transfer只有1个chunk）
-        //       结果：窗口很快被填满，后续chunks无法post
-        //
-        // 正确做法：
-        // - 对于WRITE操作，不要在NIXL层面分chunk
-        // - 发送一次metadata（包含整个size）
-        // - 调用一次uccl_engine_write（包含整个size）
-        // - UCCL engine内部会自动分成多个chunks（通过UCCL_TCPX_CHUNK_BYTES控制）
-        //
-        // 注意：READ操作保持原有的chunking逻辑（因为READ是pull模式，不需要metadata）
+        // Ban NIXL chunking
+
 
         int result = 0;
         uint64_t transfer_id = 0;
 
         switch (operation) {
         case NIXL_READ: {
-            // READ操作：保持原有的chunking逻辑
             size_t chunk_bytes = getChunkBytes();
             bool enable_chunking = (chunk_bytes > 0);
             size_t remaining = lsize;
@@ -855,9 +843,7 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
         }
 
         case NIXL_WRITE: {
-            // WRITE操作：不要在NIXL层面分chunk，让UCCL engine来处理
 
-            // 1. 发送metadata（只发送一次，包含整个传输的大小）
             md_t md;
             md.op = UCCL_WRITE;
             md.data.tx_data.data_ptr = reinterpret_cast<uint64_t>(rmd->addr);
@@ -873,8 +859,7 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
             NIXL_DEBUG << "Sent WRITE metadata: remote_addr=" << rmd->addr
                        << " total_size=" << lsize;
 
-            // 2. 调用一次uccl_engine_write（包含整个传输）
-            //    UCCL engine内部会自动分成多个chunks
+
             result = uccl_engine_write(conn, local_mr, lmd->addr, lsize, &transfer_id);
             if (result != 0) {
                 NIXL_ERROR << "TCPX WRITE failed: size=" << lsize;
@@ -886,6 +871,8 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
             }
             tcpx_handle = static_cast<nixlTcpxReqH *>(handle);
             tcpx_handle->transfer_ids.push_back(transfer_id);
+            // WRITE path waits for passive peer to signal recv completion
+            tcpx_handle->expect_recv_done = (operation == NIXL_WRITE);
 
             NIXL_DEBUG << "Successfully posted WRITE: size=" << lsize
                        << " transfer_id=" << transfer_id;
@@ -931,14 +918,43 @@ nixlTcpxEngine::checkXfer(nixlBackendReqH *handle) const {
             continue;
         }
 
-        int is_done = uccl_engine_xfer_status(conn, transfer_id);
-        if (is_done) {
+        int status = uccl_engine_xfer_status(conn, transfer_id);
+        if (status < 0) {
+            NIXL_ERROR << "uccl_engine_xfer_status failed for transfer_id="
+                       << transfer_id;
+            return NIXL_ERR_BACKEND;
+        }
+
+        if (status > 0) {
             tcpx_handle->completed_transfer_ids.push_back(transfer_id);
         } else {
             all_done = false;
             continue;
         }
     }
+    if (all_done && tcpx_handle->expect_recv_done) {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        bool recv_done = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto notifs = uccl_engine_get_notifs();
+            for (auto const &notif : notifs) {
+                if (std::string_view(notif.msg) == std::string_view("RECV_ERROR")) {
+                    NIXL_ERROR << "Peer reported recv error";
+                    return NIXL_ERR_BACKEND;
+                }
+                if (std::string_view(notif.msg) == std::string_view("RECV_DONE")) {
+                    recv_done = true;
+                    break;
+                }
+            }
+            if (recv_done) break;
+        }
+        if (!recv_done) {
+            NIXL_ERROR << "Timed out waiting for RECV_DONE from passive peer";
+            return NIXL_ERR_BACKEND;
+        }
+    }
+
     if (all_done && !tcpx_handle->notif_msg.empty()) {
         notify_msg_t notify_msg = {};
         strncpy(notify_msg.name, local_agent_name_.c_str(), sizeof(notify_msg.name) - 1);
