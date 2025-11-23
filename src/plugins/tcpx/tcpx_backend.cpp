@@ -199,6 +199,11 @@ nixlTcpxEngine::nixlTcpxEngine(const nixlBackendInitParams *init_params)
     size_t dev_idx = getNixlParam(custom_params, "device_idx", 0);
     size_t num_cpus = getNixlParam(custom_params, "num_cpus", 4);
     int in_python = getNixlParam(custom_params, "in_python", 1);
+    const char *nccl_fallback = std::getenv("NIXL_TCPX_USE_NCCL");
+    if (nccl_fallback && std::strcmp(nccl_fallback, "0") != 0) {
+        setenv("UCCL_NCCL_FALLBACK", "1", /*overwrite=*/1);
+        NIXL_DEBUG << "TCPX plugin enabled NCCL fallback via env";
+    }
     NIXL_DEBUG << "Creating TCPX Engine for dev: " << dev_idx << ", num_cpus: " << num_cpus;
     if (has_device_idx) {
         std::string dev_env = std::to_string(dev_idx);

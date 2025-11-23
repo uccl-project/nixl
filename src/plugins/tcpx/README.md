@@ -1,9 +1,10 @@
-## TCPX Backend Plugin (Thin Wrapper)
+## TCPX Backend Plugin (NCCL GPUDirectTCPX Wrapper)
 
-This plugin keeps the same shape as the PR‑895 UCCL backend but expects an
-external `libuccl_engine.so` that is compiled with TCPX support
-(`USE_TCPX=1`). When the shared library is built that way, the exported C API
-routes all communication through the Phase A `tcpx::Endpoint` implementation.
+This plugin keeps the same shape as the PR‑895 UCCL backend but now expects an
+external `libuccl_engine.so` built with `USE_TCPX=1`, which internally uses
+NCCL `ncclSend/ncclRecv` over GPUDirectTCPX. The legacy `tcpx::Endpoint`
+implementation has been removed; TCPX naming is retained only for metadata
+compatibility with existing NIXL configs.
 
 ## Prerequisites
 
@@ -24,11 +25,10 @@ sudo ldconfig
 sudo make USE_TCPX=1 install
 ```
 
-The `USE_TCPX=1` flag toggles the build to include `tcpx_engine.cc`,
-`tcpx/tcpx_impl.cc`, and the CUDA unpack kernels, while disabling the RDMA
+The `USE_TCPX=1` flag builds `libuccl_engine.so` with NCCL GPUDirectTCPX
+support (via `p2p/nccl_tcpx_endpoint.{h,cc}`) while disabling the RDMA
 components. After `make install`, the system should expose
-`libuccl_engine.so` (with TCPX enabled) on a path discoverable by Meson and the
-dynamic loader.
+`libuccl_engine.so` on a path discoverable by Meson and the dynamic loader.
 
 ## Building the plugin
 
@@ -88,13 +88,13 @@ PY
 
 - Backend options: `device_idx`, `num_cpus`, and `in_python` (parity with UCCL).
 - Required environment (minimum):
-  - `NCCL_MIN_ZCOPY_SIZE=4096`
-  - `NCCL_GPUDIRECTTCPX_MIN_ZCOPY_SIZE=4096`
-  - `NCCL_GPUDIRECTTCPX_RECV_SYNC=1`
-  - `UCCL_TCPX_CHUNK_BYTES` ≤ 4 MiB
-  - `UCCL_TCPX_PORT_RETRIES` (optional) to probe adjacent ports if the base is busy
-  - TCPX NIC binding variables (see `p2p/tcpx_plugin_usage.md` for a ready-made
-    script)
+	- `NCCL_MIN_ZCOPY_SIZE=4096`
+	- `NCCL_GPUDIRECTTCPX_MIN_ZCOPY_SIZE=4096`
+	- `NCCL_GPUDIRECTTCPX_RECV_SYNC=1`
+	- `UCCL_TCPX_CHUNK_BYTES` ≤ 4 MiB
+	- `UCCL_TCPX_PORT_RETRIES` (optional) to probe adjacent ports if the base is busy
+	- TCPX NIC binding variables (see `p2p/tcpx_plugin_usage.md` for a ready-made
+	    script)
 - Set `NIXL_BACKEND=tcp-x` (or the corresponding configuration entry) so the
   agent picks this plugin.
 
