@@ -810,40 +810,22 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
 
         switch (operation) {
         case NIXL_READ: {
-            size_t chunk_bytes = getChunkBytes();
-            bool enable_chunking = (chunk_bytes > 0);
-            size_t remaining = lsize;
-            size_t offset = 0;
-
-            while (remaining > 0) {
-                size_t chunk = remaining;
-                if (enable_chunking && remaining > chunk_bytes) {
-                    chunk = std::min(remaining, chunk_bytes);
-                }
-
-                void *local_addr = reinterpret_cast<void *>(
-                    reinterpret_cast<uintptr_t>(lmd->addr) + offset);
-
-                result = uccl_engine_read(conn, local_mr, local_addr, chunk,
-                                          local_priv->fifo_item_data, &transfer_id);
-                if (result != 0) {
-                    NIXL_ERROR << "TCPX READ failed at offset=" << offset
-                               << " size=" << chunk;
-                    return NIXL_ERR_BACKEND;
-                }
-
-                if (!handle) {
-                    handle = new nixlTcpxReqH(conn);
-                }
-                tcpx_handle = static_cast<nixlTcpxReqH *>(handle);
-                tcpx_handle->transfer_ids.push_back(transfer_id);
-
-                NIXL_DEBUG << "Successfully posted READ chunk: offset=" << offset
-                           << " size=" << chunk << " transfer_id=" << transfer_id;
-
-                offset += chunk;
-                remaining -= chunk;
+            // Mirror WRITE behavior: single read matching the single advertised slice.
+            result = uccl_engine_read(conn, local_mr, lmd->addr, lsize,
+                                      local_priv->fifo_item_data, &transfer_id);
+            if (result != 0) {
+                NIXL_ERROR << "TCPX READ failed: size=" << lsize;
+                return NIXL_ERR_BACKEND;
             }
+
+            if (!handle) {
+                handle = new nixlTcpxReqH(conn);
+            }
+            tcpx_handle = static_cast<nixlTcpxReqH *>(handle);
+            tcpx_handle->transfer_ids.push_back(transfer_id);
+
+            NIXL_DEBUG << "Successfully posted READ: size=" << lsize
+                       << " transfer_id=" << transfer_id;
             break;
         }
 
@@ -852,7 +834,7 @@ nixlTcpxEngine::postXfer(const nixl_xfer_op_t &operation,
             md_t md;
             md.op = UCCL_WRITE;
             md.data.tx_data.data_ptr = reinterpret_cast<uint64_t>(rmd->addr);
-            md.data.tx_data.data_size = lsize;  // 整个传输的大小
+            md.data.tx_data.data_size = lsize;  
 
             int md_result = uccl_engine_send_tx_md(conn, &md);
             if (md_result < 0) {
